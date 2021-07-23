@@ -143,11 +143,11 @@ class _WebQrViewState extends State<WebQrView> {
       var stream = await html.window.navigator.mediaDevices?.getUserMedia({
         'video': {
           'deviceId': devices.where((d) => d.kind == 'videoinput').last.deviceId,
-          'width': {'ideal': 4096},
-          'height': {'ideal': 2160},
-          // 'width': {'ideal': 1920},
-          // 'height': {'ideal': 1080},
-        }
+          // 'width': {'ideal': 4096},
+          // 'height': {'ideal': 2160},
+          'width': {'ideal': 1920},
+          'height': {'ideal': 1080},
+        },
       });
       
       _localStream = stream;
@@ -229,14 +229,14 @@ class _WebQrViewState extends State<WebQrView> {
         scaledScanArea, scaledScanArea,
         0, 0, canvas.width!, canvas.height!);
     } else {
-      var targetShorter = 1280;
+      var targetLonger = 1280;
 
       if (canvas.width! < canvas.height!) {
-        canvas.height = targetShorter;
-        canvas.width = (targetShorter * video.videoWidth / video.videoHeight).round();
+        canvas.height = targetLonger;
+        canvas.width = (targetLonger * video.videoWidth / video.videoHeight).round();
       } else {
-        canvas.width = targetShorter;
-        canvas.height = (targetShorter * video.videoHeight / video.videoWidth).round();
+        canvas.width = targetLonger;
+        canvas.height = (targetLonger * video.videoHeight / video.videoWidth).round();
       }
 
       print('cw: ${video.clientWidth}, ch: ${video.clientHeight}, vw: ${video.videoWidth}, vh: ${video.videoHeight}');
