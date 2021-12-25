@@ -119,6 +119,7 @@ class _QRViewState extends State<QRView> {
       _platformQrView = createWebQrView(
         onPlatformViewCreated: widget.onQRViewCreated,
         cameraFacing: widget.cameraFacing,
+        scanArea: widget.overlay?.cutOutHeight,
       );
     } else {
       switch (defaultTargetPlatform) {
