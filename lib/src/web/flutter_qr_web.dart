@@ -3,13 +3,18 @@
 import 'dart:async';
 import 'dart:core';
 import 'dart:html' as html;
+import 'dart:js_util';
 import 'dart:ui' as ui;
 
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/widgets.dart';
 
 import '../../qr_code_scanner.dart';
-
-import 'dart:math';
+import '../qr_code_scanner.dart';
+import '../types/camera.dart';
+import 'jsqr.dart';
+import 'media.dart';
 
 /// Even though it has been highly modified, the origial implementation has been
 /// adopted from https://github.com:treeder/jsqr_flutter
@@ -20,13 +25,11 @@ import 'dart:math';
 class WebQrView extends StatefulWidget {
   final QRViewCreatedCallback onPlatformViewCreated;
   final CameraFacing? cameraFacing;
-  final double? scanArea;
 
   const WebQrView(
       {Key? key,
       required this.onPlatformViewCreated,
-      this.cameraFacing = CameraFacing.front,
-      this.scanArea})
+      this.cameraFacing = CameraFacing.front})
       : super(key: key);
 
   @override
@@ -51,11 +54,6 @@ class WebQrView extends StatefulWidget {
 }
 
 class _WebQrViewState extends State<WebQrView> {
-  final html.Worker _barcodeWorker = html.Worker(
-      'assets/packages/qr_code_scanner/assets/barcode_worker.dart.js');
-  final html.MessageChannel _barcodeChannel = html.MessageChannel();
-  late final StreamSubscription<html.MessageEvent> _barcodeChannelSubscription;
-
   html.MediaStream? _localStream;
   // html.CanvasElement canvas;
   // html.CanvasRenderingContext2D ctx;
@@ -75,16 +73,10 @@ class _WebQrViewState extends State<WebQrView> {
   late CameraFacing facing;
 
   Timer? _frameIntervall;
-  bool capturing = false;
 
   @override
   void initState() {
     super.initState();
-
-    _barcodeChannelSubscription =
-        _barcodeChannel.port2.onMessage.listen(_onJsqrResponse);
-    _barcodeWorker
-        .postMessage({'port': _barcodeChannel.port1}, [_barcodeChannel.port1]);
 
     facing = widget.cameraFacing ?? CameraFacing.front;
 
@@ -97,17 +89,6 @@ class _WebQrViewState extends State<WebQrView> {
     Timer(const Duration(milliseconds: 500), () {
       start();
     });
-  }
-
-  void _onJsqrResponse(html.MessageEvent event) {
-    var data = event.data?['data'] as String?;
-
-    if (data == null) {
-      capturing = false;
-    } else {
-      _scanUpdateController
-          .add(Barcode(data, BarcodeFormat.qrcode, data.codeUnits));
-    }
   }
 
   Future start() async {
@@ -132,8 +113,6 @@ class _WebQrViewState extends State<WebQrView> {
   @override
   void dispose() {
     cancel();
-    _barcodeChannelSubscription.cancel();
-    _barcodeWorker.terminate();
     super.dispose();
   }
 
@@ -144,25 +123,19 @@ class _WebQrViewState extends State<WebQrView> {
     }
 
     try {
-      final devices =
-          await html.window.navigator.mediaDevices!.enumerateDevices();
-
-      var stream = await html.window.navigator.mediaDevices?.getUserMedia({
-        'video': {
-          'deviceId':
-              devices.where((d) => d.kind == 'videoinput').last.deviceId,
-          //'width': {'ideal': 4096},
-          //'height': {'ideal': 2160},
-          'width': {'ideal': 1920},
-          'height': {'ideal': 1080},
-        }
-      });
+      var constraints = UserMediaOptions(
+          video: VideoOptions(
+        facingMode: (facing == CameraFacing.front ? 'user' : 'environment'),
+      ));
+      // dart style, not working properly:
+      // var stream =
+      //     await html.window.navigator.mediaDevices.getUserMedia(constraints);
+      // straight JS:
+      var stream = await promiseToFuture(getUserMedia(constraints));
       _localStream = stream;
       video.srcObject = _localStream;
       video.setAttribute('playsinline',
           'true'); // required to tell iOS safari we don't want fullscreen
-      video.setAttribute(
-          'style', 'width: 100%; height: 100%; object-fit: cover');
       if (_controller == null) {
         _controller = QRViewControllerWeb(this);
         widget.onPlatformViewCreated(_controller!);
@@ -202,93 +175,29 @@ class _WebQrViewState extends State<WebQrView> {
     if (_localStream == null) {
       return null;
     }
-    if (capturing) {
-      return;
-    }
-
-    capturing = true;
     final canvas =
         html.CanvasElement(width: video.videoWidth, height: video.videoHeight);
     final ctx = canvas.context2D;
-
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = 'high';
-
-    if (widget.scanArea != null) {
-      var cropTarget = 300;
-
-      var clientRatio = video.clientWidth / video.clientHeight;
-      var videoRatio = video.videoWidth / video.videoHeight;
-
-      var scaledScanArea = clientRatio < videoRatio
-          ? (widget.scanArea! * (video.videoHeight / video.clientHeight))
-              .round() // width overflows
-          : (widget.scanArea! * (video.videoWidth / video.clientWidth))
-              .round(); // height overflows
-
-      canvas.width = min(cropTarget, scaledScanArea);
-      canvas.height = min(cropTarget, scaledScanArea);
-
-      final halfScanArea = scaledScanArea / 2;
-
-      print(
-          'cw: ${video.clientWidth}, ch: ${video.clientHeight}, vw: ${video.videoWidth}, vh: ${video.videoHeight}, sx: ${video.videoWidth / 2 - halfScanArea}, sy: ${video.videoHeight / 2 - halfScanArea}, a: $scaledScanArea');
-
-      ctx.drawImageScaledFromSource(
-          video,
-          video.videoWidth / 2 - halfScanArea,
-          video.videoHeight / 2 - halfScanArea,
-          scaledScanArea,
-          scaledScanArea,
-          0,
-          0,
-          canvas.width!,
-          canvas.height!);
-    } else {
-      var targetShorter = 1280;
-
-      if (canvas.width! < canvas.height!) {
-        canvas.height = targetShorter;
-        canvas.width =
-            (targetShorter * video.videoWidth / video.videoHeight).round();
-      } else {
-        canvas.width = targetShorter;
-        canvas.height =
-            (targetShorter * video.videoHeight / video.videoWidth).round();
-      }
-
-      print(
-          'cw: ${video.clientWidth}, ch: ${video.clientHeight}, vw: ${video.videoWidth}, vh: ${video.videoHeight}');
-
-      ctx.drawImageScaled(video, 0, 0, canvas.width!, canvas.height!);
-    }
+    // canvas.width = video.videoWidth;
+    // canvas.height = video.videoHeight;
+    ctx.drawImage(video, 0, 0);
     final imgData = ctx.getImageData(0, 0, canvas.width!, canvas.height!);
 
-    _barcodeWorker.postMessage({
-      'imageData': imgData.data,
-      'width': canvas.width,
-      'height': canvas.height
-    });
+    final size =
+        Size(canvas.width?.toDouble() ?? 0, canvas.height?.toDouble() ?? 0);
+    if (size != _size) {
+      setState(() {
+        _setCanvasSize(size);
+      });
+    }
 
-    // var data = FrameData(
-    //   imageData: imgData.data,
-    //   width: canvas.width,
-    //   height: canvas.height,
-    // );
-
-    // var code = await compute(decodeImage, data);
-
-    // if (code != null) {
-    //   _scanUpdateController.add(Barcode(code.data, BarcodeFormat.qrcode, code.data.codeUnits));
-    // }
+    final code = jsQR(imgData.data, canvas.width, canvas.height);
+    // ignore: unnecessary_null_comparison
+    if (code != null) {
+      _scanUpdateController
+          .add(Barcode(code.data, BarcodeFormat.qrcode, code.data.codeUnits));
+    }
   }
-
-  // static Code? decodeImage(FrameData data) {
-  //   final start = DateTime.now();
-  //   final code = jsQR(data.imageData, data.width, data.height);
-  //   print('Decoding took ${DateTime.now().difference(start).inMilliseconds} ms');
-  //   return code;
-  // }
 
   @override
   Widget build(BuildContext context) {
@@ -298,7 +207,41 @@ class _WebQrViewState extends State<WebQrView> {
     if (_localStream == null) {
       return const Center(child: CircularProgressIndicator());
     }
-    return HtmlElementView(viewType: viewID);
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        var zoom = 1.0;
+
+        if (_size.height != 0) zoom = constraints.maxHeight / _size.height;
+
+        if (_size.width != 0) {
+          final horizontalZoom = constraints.maxWidth / _size.width;
+          if (horizontalZoom > zoom) {
+            zoom = horizontalZoom;
+          }
+        }
+
+        return SizedBox(
+          width: constraints.maxWidth,
+          height: constraints.maxHeight,
+          child: Center(
+            child: SizedBox.fromSize(
+              size: _size,
+              child: Transform.scale(
+                alignment: Alignment.center,
+                scale: zoom,
+                child: HtmlElementView(viewType: viewID),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  void _setCanvasSize(ui.Size size) {
+    setState(() {
+      _size = size;
+    });
   }
 }
 
@@ -374,11 +317,8 @@ class QRViewControllerWeb implements QRViewController {
   }
 }
 
-Widget createWebQrView(
-        {onPlatformViewCreated,
-        CameraFacing? cameraFacing,
-        double? scanArea}) =>
+Widget createWebQrView({onPlatformViewCreated, CameraFacing? cameraFacing}) =>
     WebQrView(
-        onPlatformViewCreated: onPlatformViewCreated,
-        cameraFacing: cameraFacing,
-        scanArea: scanArea);
+      onPlatformViewCreated: onPlatformViewCreated,
+      cameraFacing: cameraFacing,
+    );
